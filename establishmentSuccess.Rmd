@@ -1,0 +1,2243 @@
+---
+title: "Landscape Spatial Heterogeneity and Dynamic Environmental Conditions are Essential Predictors of Small Founding Populations' Establishment Success"
+author: "XXXXXXXXXXXXXXXXXXXXX"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_depth: 3
+    toc_float: true
+---
+
+```{r, echo=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, echo = FALSE,  fig.align = 'left')
+```
+
+```{r, message = FALSE}
+
+# fundamentals
+library(tidyverse)
+library(khroma)
+
+# basic stats
+library(rsample)
+library(Metrics)
+library(infer)
+library(broom)
+library(lme4)
+library(nlme)
+library(mgcv)
+library(DHARMa)
+library(MASS)
+library(emmeans)
+library(caret)
+library(arm)
+library(pROC)
+library(plotROC)
+library(MLmetrics)
+library(multcomp)
+library(Metrics)
+library(pscl)
+library(ResourceSelection)
+library(lmtest) #wald test
+library(survey) #wald test
+library(khroma)
+
+# time-series analysis
+library(timetk)
+library(runner)
+```
+
+```{r, include = FALSE}
+muted <- color("muted")
+col <- muted(9)
+concrete <- c("#FBFBF2", "#CFD2CD", "#7F7B82","#403d39", "#252422")
+```
+
+
+# Conceptual framework and preliminary findings
+
+
+## Methods
+
+### Scenarios
+
+Run 600 scenarios
+
+- 100 scenarios | 1 propagule number | 2-20 propagule size | 2 sites | days 1-365
+- 100 scenarios | 1 propagule number | 2-20 propagule size | 2 sites | days 1-365
+
+- 100 scenarios | 2 propagule number | 2-20 propagule size | 2 sites | days 1-730
+- 100 scenarios | 2 propagule number | 2-20 propagule size | 2 sites | days 1-730
+
+- 100 scenarios | 3 propagule number | 3-20 propagule size | 2 sites | days 1-730
+- 100 scenarios | 3 propagule number | 3-20 propagule size | 2 sites | days 1-730
+
+
+
+### Analysis
+
+Four levels of analysis:
+
+1. Logistic Generalized Linear Model
+
+probabilityEstablish ~ propaguleSize
+
+
+2. Logistic Generalized Linear Model
+
+probabilityEstablish ~ propaguleSize + site
+
+
+3. Logistic Generalized Linear Model
+
+probabilityEstablish ~ propaguleSize + propaguleNumber + site
+
+
+4. Running Logistic Generalized Linear Model
+
+probabilityEstablish ~ propaguleSize + propaguleNumber + site
+
+
+4a. Line graph: probabilityEstablish~propaguleSize [facet_grid: site~propaguleNumber]
+
+4b. time-series line graph: predictions for 2:15 propagule size over space and time [facet_wrap: propaguleSize]
+
+4c. time-series line graph: importance of predictor variables over space and time
+
+
+
+
+# Preparing data for analysis
+
+## Core data
+
+```{r, message = FALSE}
+# whether a scenario replicate was a boom or bust (1 or 0)
+pe_multi_IE <- read_csv2("./input/simulation_output_raw.csv")
+treatment <- readLines("./input/treatment.txt")
+LHS_df_multi <- read_csv("./input/introductionEvent_3_lhs.csv") %>% 
+  rowwise() %>% 
+  mutate(firstIntro = if_else(noIntroEvent == "two", 
+                              min(event1_time, event2_time),
+                              if_else(noIntroEvent == "three", 
+                                      min(event1_time, event2_time, event3_time),
+                                      event1_time))) %>% 
+  ungroup() %>% 
+  relocate(rowid, scenarioName, noIntroEvent, size, entryPoint_1, firstIntro)
+```
+
+
+```{r}
+# the probability of establishment of a scenario based on the mean booms(1) across ~30 replicates
+pe_multi_IE_prob <- pe_multi_IE %>% 
+  left_join(LHS_df_multi,
+            by = c("treatment" = "scenarioName",
+                   "entryPoint_1",
+                   "firstIntro",
+                   "size")) %>% 
+  group_by(treatment,
+           noIntroEvent,
+           entryPoint_1,
+           firstIntro,
+           size,
+           event1_time,
+           event1_size,
+           event2_time,
+           event2_size,
+           event3_time,
+           event3_size) %>% 
+  summarize(probEstablish = mean(established == 1),
+            reps = n()) %>% 
+  ungroup()
+pe_multi_IE_prob
+```
+
+```{r}
+pe_multi_IE_prob %>% 
+  filter(entryPoint_1 == 1,
+         size > 1) %>% 
+  ggplot() +
+  geom_point(aes(x = firstIntro,
+                 y = probEstablish,
+                 size = size)) +
+  facet_wrap(vars(noIntroEvent),
+             ncol = 1) +
+  theme_bw()
+```
+
+
+# GLM data
+
+# Let's run more complex models
+
+
+```{r}
+glm_data <- pe_multi_IE %>% 
+  left_join(LHS_df_multi,
+            by = c("treatment" = "scenarioName",
+                   "entryPoint_1",
+                   "firstIntro",
+                   "size")) %>% 
+  mutate(entryPoint_1 = factor(entryPoint_1),
+         pseudoDate = as.Date(Sys.Date() + firstIntro),
+         noIntroEvent = factor(noIntroEvent, 
+                               levels = c("one",
+                                          "two",
+                                          "three"))) %>% 
+  rename("entryPoint" = "entryPoint_1") %>% 
+  relocate(treatment, established, entryPoint, noIntroEvent, size)
+glm_data
+```
+
+
+# Part 1 : Logistic Generalized Linear Model 1
+
+A Logistic Generalised Linear Regression of probability of establishment as a function of propagule size.
+
+
+Formula: probabilityEstablish ~ propaguleSize
+
+```{r}
+m1 <- glm(data = glm_data, 
+    formula = established ~ size,
+    family = "binomial")
+m1 %>%   summary()
+m1 %>%  anova(test = "Chisq")
+m1 %>%  aov()
+```
+
+
+```{r}
+glm_data %>% 
+  ggplot() +
+  geom_point(aes(y = established,
+                 x = size),
+             color = concrete[3],
+             alpha = 0.5,
+             shape = "|",
+             position = position_dodge2(width = 1)) +
+  geom_smooth(aes(y = established,
+                  x = size),
+              color = "black",
+              method = "glm",
+              method.args = list(family = "binomial"),
+              se = TRUE) +
+  labs(y = "Probability of establishment",
+       x = "Propagule size") +
+  theme_bw() +
+  theme(axis.title = element_text(size = 10),
+        axis.text =  element_text(size = 8))
+```
+
+
+
+```{r}
+ggsave(filename = "output/bGLM1.jpg",
+       plot = last_plot(),
+       width = 80,
+       height = 40,
+       units = "mm",
+       dpi = 300,
+       device = "jpeg")
+```
+
+
+
+```{r}
+
+m1_pred <- augment(m1,
+        newdata = data.frame(size = seq(2,20,1)),
+        type.predict = "response")
+
+```
+
+
+## Residual analysis
+
+**binned residuals**
+ After dividing the data into categories (bins) based on their fitted values, plots the average residuals versus the average fitted values for each bin.
+
+Plot is reasonable if majority of the fitted values fall within the SE bands (+- 2 SE is the grey lines)
+
+```{r}
+binnedplot(fitted(m1),
+           residuals(m1, type = "response"),
+           nclass = 50)
+```
+
+```{r}
+jpeg("output/bGLM1.jpg",
+     width = 90,
+     height = 60,
+     pointsize = 8, 
+     units = "mm",
+     res = 300)
+binnedplot(fitted(m1),
+           residuals(m1, type = "response"),
+           nclass = 50) 
+dev.off()
+```
+
+
+**Confusion Matrix**
+
+```{r}
+confusionMatrix(factor(round(augment(m1,
+                                     type.predict = "response")$.fitted,
+                             0)),
+                factor(augment(m1,
+                              type.predict = "response")$established))
+```
+
+**Receiver Operating Characteristic (ROC) Curve**
+
+
+```{r}
+pROC::roc(established ~ .fitted,
+    data = augment(m1, type.predict = "response"),
+    plot = TRUE,
+    print.auc = TRUE)
+```
+
+
+### Goodness-of-fit
+
+McFadden's R2
+
+Measure ranges from 0 to just under 1, with values closer to zero indicatingthat the model has no predictive power (not better than a model fitted with only the intercept)
+
+```{r}
+pR2(m1) %>% 
+  tidy()
+```
+
+
+
+
+
+### predictive performace via cross-validation
+
+
+```{r}
+set.seed(7)
+m1_cv <- glm_data %>% 
+  vfold_cv(v=10) %>% 
+  mutate(train = map(.x = splits, 
+                     ~training(.x)),
+         validate = map(.x = splits,
+                        ~testing(.x))) %>% 
+  mutate(model = map(.x = train,
+                     ~glm(data = .x,
+                          formula = established ~ size,
+                          family = "binomial"))) %>% 
+  mutate(validate_actual = map(.x = validate,
+                               ~.x$established),
+         validate_prob = map2(.x = model,
+                              .y = validate,
+                              ~predict(object = .x,
+                                       newdata = .y,
+                                       validate = "response"))) %>% 
+  mutate(validate_predicted = map(.x = validate_prob,
+                                  ~ .x > 0.5)) %>% 
+  mutate(accuracy = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::accuracy(.x, .y)),
+         precision = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::precision(.x, .y)),
+         recall = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::recall(.x, .y)),
+         auc = map2_dbl(.x = validate_actual,
+                         .y = validate_prob,
+                         ~Metrics::auc(.x, .y)))
+
+m1_cv %>% 
+  dplyr::select(accuracy,precision, recall, auc) %>% 
+  mutate(f1 = (2*precision*recall)/(precision + recall)) %>% 
+  summarise(accuracy_mean = mean(accuracy),
+            accuracy_se = sd(accuracy),
+            precision_mean = mean(precision),
+            precision_se = sd(precision),
+            recall_mean = mean(recall),
+            recall_se = sd(recall),
+            f1_mean = mean(f1),
+            f1_se = sd(f1),
+            auc_mean = mean(auc),
+            auc_se = sd(auc)) %>% 
+  pivot_longer(cols = everything(),
+               values_to = "scores") %>% 
+  separate(col = name,
+           sep = "_",
+           remove = TRUE,
+           into = c("metrics", "stat")) %>% 
+  pivot_wider(names_from = "stat",
+              values_from = "scores")
+```
+
+
+# Part 2 : Logistic Generalized Linear Model 2
+
+A Logistic Generalised Linear Regression of probability of establishment as a function of propagule size and propagule number.
+
+
+Formula: probabilityEstablish ~ propaguleSize + noIntroEvent
+
+```{r}
+m2 <- glm(data = glm_data, 
+    formula = established ~ size * noIntroEvent,
+    family = "binomial")
+m2 %>%   summary()
+m2 %>%  anova(test = "Chisq")
+m2 %>%  aov()
+m2 %>%  varImp()
+```
+
+```{r}
+anova(m1, m2, test = "Chisq")
+```
+
+```{r}
+glht(m2,
+     linfct = mcp(noIntroEvent = "Tukey")) %>% 
+  summary()
+```
+
+
+
+```{r}
+coef(m2) %>% 
+  tidy() %>% 
+  rowid_to_column()
+```
+
+
+```{r}
+paste0(round(coef(m2)[1], 4), " is the intercept of noIntroEvent:1")
+paste0(round(coef(m2)[1] + coef(m2)[3], 4), " is the intercept of noIntroEvent:2")
+paste0(round(coef(m2)[1] + coef(m2)[4], 4), " is the intercept of noIntroEvent:3")
+
+
+paste0(round(coef(m2)[2], 4), " is the slope of noIntroEvent:1")
+paste0(round(coef(m2)[2] + coef(m2)[5], 4), " is the slope of noIntroEvent:2")
+paste0(round(coef(m2)[2] + coef(m2)[6], 4), " is the slope of noIntroEvent:3 ")
+
+```
+
+
+
+
+```{r}
+ggplot() +
+  geom_point(data = glm_data,
+             aes(y = established,
+                 x = size),
+             color = concrete[3],
+             alpha = 0.5, 
+             shape = "|",
+             position = position_dodge2(width = 1)) +
+  geom_smooth(data = glm_data,
+              aes(y = established,
+                  x = size,
+                  color = noIntroEvent,
+                  group = noIntroEvent),
+              method = "glm",
+              method.args = list(family = "binomial"),
+              se = FALSE) +
+  labs(y = "Probability of establishment",
+       x = "Propagule size") +
+  guides(color = guide_legend("Propagule number")) +
+  scale_colour_muted() +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 10),
+        axis.text =  element_text(size = 8),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8))
+```
+
+```{r}
+ggsave(filename = "output/bGLM2.jpg",
+       plot = last_plot(),
+       width = 80,
+       height = 55,
+       units = "mm",
+       dpi = 300,
+       device = "jpeg")
+```
+
+
+
+
+```{r}
+m2_pred <- augment(m2,
+        newdata = data.frame(size = c(rep(seq(2,20,1), 2),
+                                      seq(3,20,1)),
+                             noIntroEvent = c(rep("one", 19),
+                                              rep("two", 19),
+                                              rep("three", 18))) %>% 
+                  mutate(noIntroEvent = factor(noIntroEvent, 
+                                               levels = c("one", 
+                                                          "two", 
+                                                          "three"))),
+        type.predict = "response")
+
+```
+
+
+## Residual analysis
+
+**binned residuals**
+ After dividing the data into categories (bins) based on their fitted values, plots the average residuals versus the average fitted values for each bin.
+
+Plot is reasonable if majority of the fitted values fall within the SE bands (+- 2 SE is the grey lines)
+
+```{r}
+binnedplot(fitted(m2),
+           residuals(m2, type = "response"),
+           nclass = 50)
+```
+
+```{r}
+jpeg("output/bGLM2.jpg",
+     width = 90,
+     height = 60,
+     pointsize = 8, 
+     units = "mm",
+     res = 300)
+binnedplot(fitted(m2),
+           residuals(m2, type = "response"),
+           nclass = 50) 
+dev.off()
+```
+
+
+**Confusion Matrix**
+
+```{r}
+confusionMatrix(factor(round(augment(m2,
+                                     type.predict = "response")$.fitted,
+                             0)),
+                factor(augment(m2,
+                              type.predict = "response")$established))
+```
+
+**Receiver Operating Characteristic (ROC) Curve**
+
+
+```{r}
+pROC::roc(established ~ .fitted,
+    data = augment(m2, type.predict = "response"),
+    plot = TRUE,
+    print.auc = TRUE)
+```
+
+### Goodness-of-fit
+
+McFadden's R2
+
+Measure ranges from 0 to just under 1, with values closer to zero indicatingthat the model has no predictive power (not better than a model fitted with only the intercept)
+
+```{r}
+pR2(m2) %>% 
+  tidy()
+```
+
+
+
+
+
+### predictive performace via cross-validation
+
+
+```{r}
+set.seed(7)
+m2_cv <- glm_data %>% 
+  vfold_cv(v=10) %>% 
+  mutate(train = map(.x = splits, 
+                     ~training(.x)),
+         validate = map(.x = splits,
+                        ~testing(.x))) %>% 
+  mutate(model = map(.x = train,
+                     ~glm(data = .x,
+                          formula = established ~ size*noIntroEvent,
+                          family = "binomial"))) %>% 
+  mutate(validate_actual = map(.x = validate,
+                               ~.x$established),
+         validate_prob = map2(.x = model,
+                              .y = validate,
+                              ~predict(object = .x,
+                                       newdata = .y,
+                                       validate = "response"))) %>% 
+  mutate(validate_predicted = map(.x = validate_prob,
+                                  ~ .x > 0.5)) %>% 
+  mutate(accuracy = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::accuracy(.x, .y)),
+         precision = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::precision(.x, .y)),
+         recall = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::recall(.x, .y)),
+         auc = map2_dbl(.x = validate_actual,
+                         .y = validate_prob,
+                         ~Metrics::auc(.x, .y)))
+
+m2_cv %>% 
+  dplyr::select(accuracy,precision, recall, auc) %>% 
+  mutate(f1 = (2*precision*recall)/(precision + recall)) %>% 
+  summarise(accuracy_mean = mean(accuracy),
+            accuracy_se = sd(accuracy),
+            precision_mean = mean(precision),
+            precision_se = sd(precision),
+            recall_mean = mean(recall),
+            recall_se = sd(recall),
+            f1_mean = mean(f1),
+            f1_se = sd(f1),
+            auc_mean = mean(auc),
+            auc_se = sd(auc)) %>% 
+  pivot_longer(cols = everything(),
+               values_to = "scores") %>% 
+  separate(col = name,
+           sep = "_",
+           remove = TRUE,
+           into = c("metrics", "stat")) %>% 
+  pivot_wider(names_from = "stat",
+              values_from = "scores")
+```
+
+
+
+
+# Part 3 : Logistic Generalized Linear Model 3
+
+A Logistic Generalised Linear Regression of probability of establishment as a function of propagule size and propagule number.
+
+
+Formula: probabilityEstablish ~ propaguleSize + noIntroEvent
+
+
+```{r}
+m3 <- glm(data = glm_data, 
+    formula = established ~ size*noIntroEvent*entryPoint,
+    family = "binomial")
+m3 %>%  summary()
+m3 %>%  anova(test = "Chisq") %>%  tidy()
+aov(m3) %>%  tidy()
+```
+```{r}
+coef(m3) %>% 
+  tidy() %>% 
+  rowid_to_column()
+```
+
+
+```{r}
+paste0(round(coef(m3)[1], 4), " is the intercept of noIntroEvent:1 & entryPoint:1")
+paste0(round(coef(m3)[1] + coef(m3)[3], 4), " is the intercept of noIntroEvent:2 & entryPoint:1")
+paste0(round(coef(m3)[1] + coef(m3)[4], 4), " is the intercept of noIntroEvent:3 & entryPoint:1")
+
+paste0(round(coef(m3)[1] + coef(m3)[5], 4), " is the intercept of noIntroEvent:1 & entryPoint:2")
+paste0(round(coef(m3)[1] + coef(m3)[3] + coef(m3)[5] + coef(m3)[9], 4), " is the intercept of noIntroEvent:2 & entryPoint:2")
+paste0(round(coef(m3)[1] + coef(m3)[4] + coef(m3)[5] + coef(m3)[10], 4), " is the intercept of noIntroEvent:3 & entryPoint:2")
+
+paste0(round(coef(m3)[2], 4), " is the slope of noIntroEvent:1 & entryPoint:1")
+paste0(round(coef(m3)[2] + coef(m3)[6], 4), " is the slope of noIntroEvent:2 & entryPoint:1")
+paste0(round(coef(m3)[2] + coef(m3)[7], 4), " is the slope of noIntroEvent:3 & entryPoint:1")
+
+paste0(round(coef(m3)[2] + coef(m3)[8] , 4), " is the slope of noIntroEvent:1 & entryPoint:2")
+paste0(round(coef(m3)[2] + coef(m3)[8] + coef(m3)[6] + coef(m3)[11], 4), " is the slope of noIntroEvent:2 & entryPoint:2")
+paste0(round(coef(m3)[2] + coef(m3)[8] + coef(m3)[7] + coef(m3)[12], 4), " is the slope of noIntroEvent:3 & entryPoint:2")
+```
+
+
+
+```{r}
+m3 %>%  varImp()
+```
+### wald test
+
+```{r}
+waldtest(m1, m2, m3)
+```
+
+### wald test
+
+taking the square of the regression coefficient to the square of the standard error of the coefficient
+
+test: the coefficient of an independent variable is significantly different from zero.
+
+Null: removing the variable from the model will not substantially harm the fit of that model.
+
+
+```{r}
+regTermTest(m3, "size")
+regTermTest(m3, "noIntroEvent")
+regTermTest(m3, "entryPoint")
+```
+
+
+```{r}
+anova(m1, m3, test = "Chisq")
+anova(m1, m2, test = "Chisq")
+anova(m2, m3, test = "Chisq")
+anova(m1, m3, test = "Chisq")
+anova(m1, m2, m3, test = "Chisq")
+anova(m1, m2, m3, test = "F")
+```
+
+
+
+```{r}
+glm_data
+glm_data$groups <- interaction(glm_data$entryPoint, glm_data$noIntroEvent)
+table(glm_data$groups)
+glht(glm(data = glm_data, 
+         formula = established ~ size*groups,
+         family = "binomial"),
+     linfct = mcp(groups  = "Tukey")) %>% 
+  summary() %>% 
+  tidy()
+```
+
+
+
+
+```{r}
+ggplot() +
+  geom_point(data = glm_data,
+             aes(y = established,
+                 x = size),
+             color = concrete[3],
+             alpha = 0.5,
+             shape = "|",
+             position = position_dodge2(width = 1)) +
+  geom_smooth(data = glm_data,
+              aes(y = established,
+                  x = size,
+                  color = noIntroEvent,
+                  linetype = entryPoint,
+                  group = groups),
+              method = "glm",
+              method.args = list(family = "binomial"),
+              se = FALSE) +
+  labs(y = "Probability of establishment",
+       x = "Propagule size") +
+  guides(color = guide_legend("Propagule number")) +
+  scale_colour_muted() + 
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 10),
+        axis.text =  element_text(size = 8),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8), 
+        strip.background = element_blank())
+```
+
+```{r}
+ggsave(filename = "output/bGLM3_b.jpg",
+       plot = last_plot(),
+       width = 80,
+       height = 55,
+       units = "mm",
+       dpi = 300,
+       device = "jpeg")
+```
+
+
+
+```{r}
+
+m3_pred <- augment(m3,
+        newdata = data.frame(size = rep(c(rep(seq(2,20,1), 2),
+                                      seq(3,20,1)), 2),
+                             noIntroEvent = rep(c(rep("one", 19),
+                                                  rep("two", 19),
+                                                  rep("three", 18)),2),
+                             entryPoint = c(rep(1, 56),
+                                            rep(2, 56))) %>% 
+                  mutate(noIntroEvent = factor(noIntroEvent, 
+                                               levels = c("one", 
+                                                          "two", 
+                                                          "three")),
+                         entryPoint = factor(entryPoint)),
+        type.predict = "response") %>% 
+      unite("groups", noIntroEvent, entryPoint, remove = FALSE)
+
+```
+
+
+## Residual analysis
+
+**binned residuals**
+ After dividing the data into categories (bins) based on their fitted values, plots the average residuals versus the average fitted values for each bin.
+
+Plot is reasonable if majority of the fitted values fall within the SE bands (+- 2 SE is the grey lines)
+
+```{r}
+binnedplot(fitted(m3),
+           residuals(m3, type = "response"))
+```
+
+```{r}
+jpeg("output/bGLM3.jpg",
+     width = 90,
+     height = 60,
+     pointsize = 8, 
+     units = "mm",
+     res = 300)
+binnedplot(fitted(m3),
+           residuals(m3, type = "response"),
+           nclass = 50) 
+dev.off()
+```
+
+
+**Confusion Matrix**
+ 0
+```{r}
+confusionMatrix(factor(round(augment(m3,
+                                     type.predict = "response")$.fitted,
+                             0)),
+                factor(augment(m3,
+                              type.predict = "response")$established))
+```
+
+**Receiver Operating Characteristic (ROC) Curve**
+
+
+```{r}
+pROC::roc(established ~ .fitted,
+    data = augment(m3, type.predict = "response"),
+    plot = TRUE,
+    print.auc = TRUE)
+```
+
+```{r}
+confusionMatrix(factor(round(augment(m3,
+                                     type.predict = "response")$.fitted,
+                             0)),
+                factor(augment(m3,
+                              type.predict = "response")$established)) %>% 
+  tidy()
+```
+
+### Goodness-of-fit
+
+McFadden's R2
+
+Measure ranges from 0 to just under 1, with values closer to zero indicatingthat the model has no predictive power (not better than a model fitted with only the intercept)
+
+```{r}
+pR2(m3) %>% 
+  tidy()
+```
+
+
+
+
+
+### predictive performace via cross-validation
+
+
+```{r}
+set.seed(7)
+m3_cv <- glm_data %>% 
+  vfold_cv(v=10) %>% 
+  mutate(train = map(.x = splits, 
+                     ~training(.x)),
+         validate = map(.x = splits,
+                        ~testing(.x))) %>% 
+  mutate(model = map(.x = train,
+                     ~glm(data = .x,
+                          formula = established ~ size*noIntroEvent*entryPoint,
+                          family = "binomial"))) %>% 
+  mutate(validate_actual = map(.x = validate,
+                               ~.x$established),
+         validate_prob = map2(.x = model,
+                              .y = validate,
+                              ~predict(object = .x,
+                                       newdata = .y,
+                                       validate = "response"))) %>% 
+  mutate(validate_predicted = map(.x = validate_prob,
+                                  ~ .x > 0.5)) %>% 
+  mutate(accuracy = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::accuracy(.x, .y)),
+         precision = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::precision(.x, .y)),
+         recall = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::recall(.x, .y)),
+         auc = map2_dbl(.x = validate_actual,
+                         .y = validate_prob,
+                         ~Metrics::auc(.x, .y)))
+
+m3_cv %>% 
+  dplyr::select(accuracy,precision, recall, auc) %>% 
+  mutate(f1 = (2*precision*recall)/(precision + recall)) %>% 
+  summarise(accuracy_mean = mean(accuracy),
+            accuracy_se = sd(accuracy),
+            precision_mean = mean(precision),
+            precision_se = sd(precision),
+            recall_mean = mean(recall),
+            recall_se = sd(recall),
+            f1_mean = mean(f1),
+            f1_se = sd(f1),
+            auc_mean = mean(auc),
+            auc_se = sd(auc)) %>% 
+  pivot_longer(cols = everything(),
+               values_to = "scores") %>% 
+  separate(col = name,
+           sep = "_",
+           remove = TRUE,
+           into = c("metrics", "stat")) %>% 
+  pivot_wider(names_from = "stat",
+              values_from = "scores")
+```
+
+
+# Manually making a tibble running window
+
+```{r}
+glm_data2 <- glm_data %>% 
+  bind_rows(glm_data %>% 
+              mutate(firstIntro = firstIntro + 365)) %>% 
+  mutate(pseudoDate = as.Date("2000-11-01") + firstIntro)
+```
+
+```{r}
+runningWindow_data <- tibble()
+for (i in 1:365) {
+a <- glm_data2 %>% 
+  filter(pseudoDate >= as.Date("2000-11-01")  + i, 
+         pseudoDate <= as.Date("2000-11-01")  + (i + 90)) %>% 
+  mutate(runningWindow = i) %>% 
+  group_by(runningWindow) %>% 
+  nest()
+runningWindow_data <- bind_rows(runningWindow_data, a)  
+}
+```
+
+```{r}
+runningWindow_model <- runningWindow_data %>% 
+  mutate(bGLM1 = map(data,
+                     ~ glm(data = .x, 
+                           formula = established ~ size,
+                           family = "binomial")),
+         bGLM2 = map(data,
+                     ~ glm(data = .x, 
+                           formula = established ~ size*noIntroEvent,
+                           family = "binomial")),
+         bGLM3 = map(data,
+                     ~ glm(data = .x, 
+                           formula = established ~ size*noIntroEvent*entryPoint,
+                           family = "binomial"))) %>% 
+  dplyr::select(-data)
+```
+
+
+```{r}
+runningWindow_coef <- runningWindow_model %>% 
+  mutate(coef = map(bGLM3,
+                    ~tidy(x = .x)))  %>% 
+  dplyr::select(-c(bGLM1, bGLM2, bGLM3)) %>% 
+  unnest(coef) %>% 
+  dplyr::select(runningWindow, term, estimate) %>% 
+  pivot_wider(names_from = term,
+              values_from = estimate) %>% 
+  mutate(A_1 = `size`,
+         A_2 = `size` + `size:noIntroEventtwo`,
+         A_3 = `size` + `size:noIntroEventthree`,
+         B_1 = `size` + `size:entryPoint2`,
+         B_2 = `size` + `size:entryPoint2` + `size:noIntroEventtwo` + `size:noIntroEventtwo:entryPoint2`,
+         B_3 = `size` + `size:entryPoint2` + `size:noIntroEventthree` + `size:noIntroEventthree:entryPoint2`) %>% 
+  dplyr::select(runningWindow, A_1:B_3)
+runningWindow_coef
+```
+```{r}
+logit2prob <- function(logit){
+  odds <- exp(logit)
+  prob <- odds/(1 + odds)
+  return(prob)
+}
+```
+
+
+```{r}
+temp <- runningWindow_coef %>% 
+  pivot_longer(cols = c(A_1:B_3)) %>%
+  separate(name, 
+           into = c("Site", "propaguleNumber"),
+           sep = "_") %>% 
+  mutate(value = logit2prob(value),
+         pseduDate = as.Date("2000-11-01") + runningWindow + 45,
+         `Entry point` = case_when(Site == "A" ~ 1,
+                                 Site == "B" ~ 2))
+temp  <- bind_rows(temp,
+                   temp %>%  
+                     mutate(pseduDate = pseduDate + 365))
+temp %>% 
+ggplot() +
+  geom_point(aes(x = pseduDate,
+                 y = value,
+                 color = propaguleNumber),
+             size = 0.5) +
+  facet_wrap(vars(`Entry point`),
+             ncol = 2, 
+             labeller = label_both) +
+  labs(x = "",
+       y = "Propagule size coefficient",
+       color = "Propagule number") +
+  scale_x_date(labels = date_format("%b"), 
+               limits = c(as.Date("2001-01-01"),
+                          as.Date("2001-12-31")),
+               expand = c(0.01,0.01),
+               breaks = c(as.Date("2001-01-01"),
+                          as.Date("2001-02-01"),
+                          as.Date("2001-03-01"),
+                          as.Date("2001-04-01"),
+                          as.Date("2001-05-01"),
+                          as.Date("2001-06-01"),
+                          as.Date("2001-07-01"),
+                          as.Date("2001-08-01"),
+                          as.Date("2001-09-01"),
+                          as.Date("2001-10-01"),
+                          as.Date("2001-11-01"),
+                          as.Date("2001-12-01"),
+                          as.Date("2002-01-01")), 
+               date_labels = c("Jan", " ", " ",
+                          "Apr", " ", " ",
+                          "Jul", " ", " ",
+                          "Oct"," ", " ",
+                          "Jan")) +
+  scale_colour_muted() +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 10),
+        axis.text =  element_text(size = 8),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8), 
+        strip.background = element_blank())
+```
+
+
+
+```{r}
+ggsave(filename = "output/RW_bGLM3_size.jpg",
+       plot = last_plot(),
+       width = 160,
+       height = 55,
+       units = "mm",
+       dpi = 300,
+       device = "jpeg")
+```
+
+```{r}
+pred_newData<- data.frame(size = rep(seq(1, 20, 1), 6),
+                          entryPoint = as.factor(c(rep(1,60), rep(2,60))),
+                          noIntroEvent = as.factor(rep(c(rep("one", 20), 
+                                                   rep("two", 20),
+                                                   rep("three", 20)), 2)))
+```
+
+```{r}
+augment(m3, newdata = pred_newData)
+```
+
+
+```{r}
+runningWindow_predict <- runningWindow_model %>%
+  dplyr::select(-c(bGLM2, bGLM1)) %>% 
+  mutate(predicted = map(bGLM3,
+                         ~augment(.x, 
+                                  newdata = pred_newData,
+                                  type.predict = "response", 
+                                  se_fit = TRUE,
+                                  interval = "confidence",
+                                  conf.lvel = 0.95))) %>% 
+  dplyr::select(-bGLM3)
+runningWindow_predict %>% 
+  unnest(predicted)
+```
+
+```{r, fig.height=8, fig.width= 7}
+temp <- runningWindow_predict %>% 
+  unnest(predicted) %>% 
+  mutate(lower = .fitted - (.se.fit*1.97),
+         upper = .fitted + (.se.fit*1.97),
+         noIntroEvent = factor(noIntroEvent,
+                               levels = c("one",
+                                          "two",
+                                          "three"),
+                               labels = c(1, 2, 3)),
+         pseudoDate = as.Date("2000-11-01") + runningWindow) %>% 
+  rename(`Entry point` = `entryPoint`,
+         `Propagule size` = `size`) %>% 
+  filter(`Propagule size` %in% c(2,3,5,10,15,20)) %>% 
+  filter(!c(`Propagule size` == 2 & noIntroEvent == 3))
+
+temp  <- bind_rows(temp,
+                   temp %>%  
+                     mutate(pseudoDate = pseudoDate + 365))
+temp %>% 
+ggplot() +
+  geom_ribbon(aes(x = pseudoDate,
+                  y = .fitted,
+                  fill = noIntroEvent,
+                  ymin = lower,
+                  ymax = upper),
+              alpha = 0.2) +
+  geom_point(aes(x = pseudoDate,
+                 y = .fitted,
+                 color = noIntroEvent),
+            size = 0.5) +
+  facet_grid(`Propagule size` ~ `Entry point`) +
+  labs(y = "Probability of establishment",
+       x = "",
+       fill = "Propagule number",
+       color = "Propagule number") +
+  scale_y_continuous(limits = c(0,1)) +
+  scale_x_date(labels = date_format("%b"), 
+               limits = c(as.Date("2001-01-01"),
+                          as.Date("2001-12-31")),
+               expand = c(0.01,0.01),
+               breaks = c(as.Date("2001-01-01"),
+                          as.Date("2001-02-01"),
+                          as.Date("2001-03-01"),
+                          as.Date("2001-04-01"),
+                          as.Date("2001-05-01"),
+                          as.Date("2001-06-01"),
+                          as.Date("2001-07-01"),
+                          as.Date("2001-08-01"),
+                          as.Date("2001-09-01"),
+                          as.Date("2001-10-01"),
+                          as.Date("2001-11-01"),
+                          as.Date("2001-12-01"),
+                          as.Date("2002-01-01")), 
+               date_labels = c("Jan", " ", " ",
+                          "Apr", " ", " ",
+                          "Jul", " ", " ",
+                          "Oct"," ", " ",
+                          "Jan")) +
+  scale_colour_muted() +
+  scale_fill_muted() +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 10),
+        axis.text =  element_text(size = 8),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8), 
+        strip.background = element_blank())
+```
+
+
+```{r}
+ggsave(filename = "output/RW_bGLM3_pred.jpg",
+       plot = last_plot(),
+       width = 165,
+       height = 180,
+       units = "mm",
+       dpi = 300,
+       device = "jpeg")
+```
+
+```{r}
+temp2 <- augment(m1,
+        newdata = data.frame(size = seq(1,20,1)),
+        type.predict = "response", 
+        se_fit = TRUE) %>% 
+  rename(`Propagule size` = "size") %>% 
+  filter(`Propagule size` %in% c(2,3,5,10,15,20)) %>% 
+  mutate(lower = .fitted - (.se.fit*1.97),
+         upper = .fitted + (.se.fit*1.97))
+  
+temp3 <- augment(m2,
+        newdata = data.frame(size = rep(seq(1,20,1), 3),
+                             noIntroEvent = c(rep("one", 20),
+                                              rep("two", 20),
+                                              rep("three", 20))),
+        type.predict = "response", 
+        se_fit = TRUE)  %>% 
+  rename(`Propagule size` = "size") %>% 
+  mutate(noIntroEvent = factor(noIntroEvent,
+                               levels = c("one",
+                                          "two",
+                                          "three"),
+                               labels = c(1, 2, 3))) %>% 
+  filter(`Propagule size` %in% c(2,3,5,10,15,20)) %>% 
+  filter(!c(`Propagule size` == 2 & noIntroEvent == 3))  %>% 
+  mutate(lower = .fitted - (.se.fit*1.97),
+         upper = .fitted + (.se.fit*1.97))
+
+temp4 <- augment(m3,
+        newdata = pred_newData,
+        type.predict = "response", 
+        se_fit = TRUE) %>% 
+  rename(`Propagule size` = "size",
+         `Entry point` = "entryPoint") %>% 
+  mutate(noIntroEvent = factor(noIntroEvent,
+                               levels = c("one",
+                                          "two",
+                                          "three"),
+                               labels = c(1, 2, 3))) %>% 
+  filter(`Propagule size` %in% c(2,3,5,10,15,20)) %>% 
+  filter(!c(`Propagule size` == 2 & noIntroEvent == 3)) %>% 
+  mutate(lower = .fitted - (.se.fit*1.97),
+         upper = .fitted + (.se.fit*1.97)) 
+
+
+temp2
+temp3
+temp4
+```
+
+```{r, fig.height=8, fig.width= 7}
+ggplot() +
+  geom_rect(data = temp2,
+               aes(xmin = as.Date("2001-01-01"),
+                   xmax = as.Date("2001-12-31"),
+                   ymin = lower,
+                   ymax = upper),
+              alpha = 0.2) +
+  geom_hline(data = temp2,
+             aes(yintercept = .fitted),
+             linetype = 1,
+             size = 1) +
+  geom_point(data = temp,
+              aes(x = pseudoDate,
+                 y = .fitted,
+                 color = noIntroEvent),
+            size = 0.5,
+            shape = 1) +
+  geom_ribbon(data = temp,
+              aes(x = pseudoDate,
+                  y = .fitted,
+                  fill = noIntroEvent,
+                  ymin = lower,
+                  ymax = upper),
+              alpha = 0.2) +
+  facet_grid(`Propagule size` ~ `Entry point`, scales = "free_y") +
+  labs(y = "Relative establishment risk",
+       x = "",
+       fill = "Propagule number",
+       color = "Propagule number") +
+  scale_x_date(labels = date_format("%b"), 
+               limits = c(as.Date("2001-01-01"),
+                          as.Date("2001-12-31")),
+               expand = c(0.01,0.01),
+               breaks = c(as.Date("2001-01-01"),
+                          as.Date("2001-02-01"),
+                          as.Date("2001-03-01"),
+                          as.Date("2001-04-01"),
+                          as.Date("2001-05-01"),
+                          as.Date("2001-06-01"),
+                          as.Date("2001-07-01"),
+                          as.Date("2001-08-01"),
+                          as.Date("2001-09-01"),
+                          as.Date("2001-10-01"),
+                          as.Date("2001-11-01"),
+                          as.Date("2001-12-01"),
+                          as.Date("2002-01-01")), 
+               date_labels = c("Jan", " ", " ",
+                          "Apr", " ", " ",
+                          "Jul", " ", " ",
+                          "Oct"," ", " ",
+                          "Jan")) +
+  scale_color_muted() +
+  scale_fill_muted() +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 10),
+        axis.text =  element_text(size = 8),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8), 
+        strip.background = element_blank())
+```
+
+```{r}
+ggsave(filename = "output/S2_bGLM1_vs_RW_bGLM3.jpg",
+       plot = last_plot(),
+       width = 165,
+       height = 180,
+       units = "mm",
+       dpi = 300,
+       device = "jpeg")
+```
+
+
+```{r, fig.height=8, fig.width= 7}
+ggplot() +
+  geom_point(data = temp,
+              aes(x = pseudoDate,
+                 y = .fitted,
+                 color = noIntroEvent),
+            size = 0.5,
+            shape = 1) +
+  geom_ribbon(data = temp,
+              aes(x = pseudoDate,
+                  y = .fitted,
+                  fill = noIntroEvent,
+                  ymin = lower,
+                  ymax = upper),
+              alpha = 0.2) +
+  geom_rect(data = temp3,
+               aes(xmin = as.Date("2001-01-01"),
+                   xmax = as.Date("2001-12-31"),
+                   ymin = lower,
+                   ymax = upper,
+                 fill = `noIntroEvent`),
+              alpha = 0.2) +
+  geom_hline(data = temp3,
+             aes(yintercept = .fitted,
+                 color = `noIntroEvent`),
+             linetype = 1,
+             size = 1) +
+  facet_grid(`Propagule size` ~ `Entry point`, scales = "free_y") +
+  labs(y = "Relative establishment risk",
+       x = "",
+       fill = "Propagule number",
+       color = "Propagule number") +
+  scale_x_date(labels = date_format("%b"), 
+               limits = c(as.Date("2001-01-01"),
+                          as.Date("2001-12-31")),
+               expand = c(0.01,0.01),
+               breaks = c(as.Date("2001-01-01"),
+                          as.Date("2001-02-01"),
+                          as.Date("2001-03-01"),
+                          as.Date("2001-04-01"),
+                          as.Date("2001-05-01"),
+                          as.Date("2001-06-01"),
+                          as.Date("2001-07-01"),
+                          as.Date("2001-08-01"),
+                          as.Date("2001-09-01"),
+                          as.Date("2001-10-01"),
+                          as.Date("2001-11-01"),
+                          as.Date("2001-12-01"),
+                          as.Date("2002-01-01")), 
+               date_labels = c("Jan", " ", " ",
+                          "Apr", " ", " ",
+                          "Jul", " ", " ",
+                          "Oct"," ", " ",
+                          "Jan")) +
+  scale_color_muted() +
+  scale_fill_muted() +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 10),
+        axis.text =  element_text(size = 8),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8), 
+        strip.background = element_blank())
+```
+
+```{r}
+ggsave(filename = "output/S2_bGLM2_vs_RW_bGLM3.jpg",
+       plot = last_plot(),
+       width = 165,
+       height = 180,
+       units = "mm",
+       dpi = 300,
+       device = "jpeg")
+```
+
+
+
+```{r, fig.height=8, fig.width= 7}
+ggplot() +
+
+  geom_point(data = temp,
+              aes(x = pseudoDate,
+                 y = .fitted,
+                 color = noIntroEvent),
+            size = 0.5,
+            shape = 1) +
+  geom_ribbon(data = temp,
+              aes(x = pseudoDate,
+                  y = .fitted,
+                  fill = noIntroEvent,
+                  ymin = lower,
+                  ymax = upper),
+              alpha = 0.2) +
+  geom_rect(data = temp4,
+               aes(xmin = as.Date("2001-01-01"),
+                   xmax = as.Date("2001-12-31"),
+                   ymin = lower,
+                   ymax = upper,
+                 fill = `noIntroEvent`),
+              alpha = 0.2) +
+  geom_hline(data = temp4,
+             aes(yintercept = .fitted,
+                 color = `noIntroEvent`),
+             linetype = 1,
+             size = 1) +
+  facet_grid(`Propagule size` ~ `Entry point`, scales = "free_y") +
+  labs(y = "Relative establishment risk",
+       x = "",
+       fill = "Propagule number",
+       color = "Propagule number") +
+  scale_x_date(labels = date_format("%b"), 
+               limits = c(as.Date("2001-01-01"),
+                          as.Date("2001-12-31")),
+               expand = c(0.01,0.01),
+               breaks = c(as.Date("2001-01-01"),
+                          as.Date("2001-02-01"),
+                          as.Date("2001-03-01"),
+                          as.Date("2001-04-01"),
+                          as.Date("2001-05-01"),
+                          as.Date("2001-06-01"),
+                          as.Date("2001-07-01"),
+                          as.Date("2001-08-01"),
+                          as.Date("2001-09-01"),
+                          as.Date("2001-10-01"),
+                          as.Date("2001-11-01"),
+                          as.Date("2001-12-01"),
+                          as.Date("2002-01-01")), 
+               date_labels = c("Jan", " ", " ",
+                          "Apr", " ", " ",
+                          "Jul", " ", " ",
+                          "Oct"," ", " ",
+                          "Jan")) +
+  scale_color_muted() +
+  scale_fill_muted() +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 10),
+        axis.text =  element_text(size = 8),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8), 
+        strip.background = element_blank())
+```
+
+```{r}
+ggsave(filename = "output/S2_bGLM3_vs_RW_bGLM3.jpg",
+       plot = last_plot(),
+       width = 165,
+       height = 180,
+       units = "mm",
+       dpi = 300,
+       device = "jpeg")
+```
+
+
+
+## Residual analysis
+
+**binned residuals**
+ After dividing the data into categories (bins) based on their fitted values, plots the average residuals versus the average fitted values for each bin.
+
+Plot is reasonable if majority of the fitted values fall within the SE bands (+- 2 SE is the grey lines)
+
+```{r}
+runningWindow_augment <- runningWindow_model %>% 
+  mutate(predicted = map(bGLM3,
+                         ~augment(.x, 
+                                  type.predict = "response", 
+                                  se_fit = TRUE,
+                                  interval = "confidence",
+                                  conf.lvel = 0.95))) %>% 
+  dplyr::select(-c(bGLM1, bGLM2, bGLM3))
+```
+
+```{r}
+runningWindow_augment <- runningWindow_augment %>% 
+  unnest() %>% 
+  dplyr::select(runningWindow,
+                established,
+                size,
+                noIntroEvent,
+                entryPoint,
+                .fitted)
+```
+**Confusion Matrix**
+
+```{r}
+confusionMatrix(factor(round(runningWindow_augment$.fitted, 0)),
+                factor(runningWindow_augment$established))
+                
+```
+
+**Receiver Operating Characteristic (ROC) Curve**
+
+```{r}
+pROC::roc(established ~ .fitted,
+    data = runningWindow_augment,
+    plot = TRUE,
+    print.auc = TRUE)
+```
+
+
+### Goodness-of-fit
+
+McFadden's R2
+
+Measure ranges from 0 to just under 1, with values closer to zero indicatingthat the model has no predictive power (not better than a model fitted with only the intercept)
+
+```{r, warning=FALSE}
+runningWindow_gof <- runningWindow_model %>% 
+  mutate(gof1 = map(bGLM1,
+                    ~tidy(pR2(.x))),
+         gof2 = map(bGLM2,
+                    ~tidy(pR2(.x))),
+         gof3 = map(bGLM3,
+                    ~tidy(pR2(.x)))) %>% 
+  dplyr::select(-c(bGLM1, bGLM2, bGLM3))
+```
+
+
+```{r}
+bind_rows(runningWindow_gof %>% 
+  dplyr::select(runningWindow, gof1) %>% 
+  unnest() %>% 
+  pivot_wider(names_from = "names",
+              values_from = "x") %>% 
+  mutate(model = "bGLM1"),
+runningWindow_gof %>% 
+  dplyr::select(runningWindow, gof2) %>% 
+  unnest() %>% 
+  pivot_wider(names_from = "names",
+              values_from = "x") %>% 
+  mutate(model = "bGLM2"),
+runningWindow_gof %>% 
+  dplyr::select(runningWindow, gof3) %>% 
+  unnest() %>% 
+  pivot_wider(names_from = "names",
+              values_from = "x") %>% 
+  mutate(model = "bGLM3")) %>%
+group_by(model) %>% 
+  summarise(McFadden_mean = mean(McFadden),
+            McFadden_sd = sd(McFadden))
+
+```
+
+
+
+```{r}
+runningWindow_gof %>% 
+  dplyr::select(runningWindow, gof3) %>% 
+  unnest() %>% 
+  pivot_wider(names_from = "names",
+              values_from = "x") %>% 
+  dplyr::select(runningWindow, McFadden)
+```
+
+
+
+```{r}
+plotData <- bind_rows(runningWindow_gof %>% 
+  dplyr::select(runningWindow, gof1) %>% 
+  unnest() %>% 
+  pivot_wider(names_from = "names",
+              values_from = "x") %>% 
+  mutate(model = "bGLM1"),
+runningWindow_gof %>% 
+  dplyr::select(runningWindow, gof2) %>% 
+  unnest() %>% 
+  pivot_wider(names_from = "names",
+              values_from = "x") %>% 
+  mutate(model = "bGLM2"),
+runningWindow_gof %>% 
+  dplyr::select(runningWindow, gof3) %>% 
+  unnest() %>% 
+  pivot_wider(names_from = "names",
+              values_from = "x") %>% 
+  mutate(model = "bGLM3"))%>% 
+  pivot_longer(cols = -c(runningWindow, model),
+               names_to = "stat",
+               values_to = "mean")
+plotData <- bind_rows(plotData,
+                      plotData %>%  mutate(runningWindow = runningWindow + 365)) %>% 
+  mutate(pseudoDate = as.Date("2000-11-01") + runningWindow)
+```
+
+
+```{r}
+plotData %>% 
+  filter(stat != "llhNull") %>% 
+ggplot() +
+  geom_point(aes(x = pseudoDate,
+                 y = mean,
+                 color = model),
+             size = 0.5) +
+  facet_wrap(vars(stat), 
+             ncol = 1,
+             scales = "free_y") +
+  labs(x = "",
+       y = "",
+       color = "") +
+  theme_bw() +
+  scale_x_date(labels = date_format("%b"), 
+               limits = c(as.Date("2001-01-01"),
+                          as.Date("2001-12-31")),
+               expand = c(0.01,0.01),
+               breaks = c(as.Date("2001-01-01"),
+                          as.Date("2001-02-01"),
+                          as.Date("2001-03-01"),
+                          as.Date("2001-04-01"),
+                          as.Date("2001-05-01"),
+                          as.Date("2001-06-01"),
+                          as.Date("2001-07-01"),
+                          as.Date("2001-08-01"),
+                          as.Date("2001-09-01"),
+                          as.Date("2001-10-01"),
+                          as.Date("2001-11-01"),
+                          as.Date("2001-12-01"),
+                          as.Date("2002-01-01")), 
+               date_labels = c("Jan", " ", " ",
+                          "Apr", " ", " ",
+                          "Jul", " ", " ",
+                          "Oct"," ", " ",
+                          "Jan")) +
+  scale_color_muted() +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 10),
+        axis.text =  element_text(size = 8),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8), 
+        strip.background = element_blank())
+```
+
+
+
+```{r}
+ggsave(filename = "output/rw_R2_and_others.jpg",
+       plot = last_plot(),
+       width = 80,
+       height = 200,
+       units = "mm",
+       dpi = 300,
+       device = "jpeg")
+```
+
+
+### predictive performace via cross-validation
+
+### bGLM1
+
+
+
+### predictive performace via cross-validation
+
+
+```{r, warning=FALSE}
+runningWindow_eval_1 <- data.frame()
+
+for (i in 1:365) {
+  
+
+a <- runningWindow_data %>% 
+  slice(i) %>% 
+  unnest() %>% 
+  vfold_cv(v =  10) %>%   
+  mutate(train = map(.x = splits, 
+                     ~training(.x)),
+         validate = map(.x = splits,
+                        ~testing(.x))) %>% 
+  mutate(model = map(.x = train,
+                     ~glm(data = .x,
+                          formula = established ~ size,
+                          family = "binomial"))) %>% 
+  mutate(validate_actual = map(.x = validate,
+                               ~.x$established),
+         validate_prob = map2(.x = model,
+                              .y = validate,
+                              ~predict(object = .x,
+                                       newdata = .y,
+                                       validate = "response"))) %>% 
+  mutate(validate_predicted = map(.x = validate_prob,
+                                  ~ .x > 0.5)) %>% 
+  mutate(accuracy = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::accuracy(.x, .y)),
+         precision = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::precision(.x, .y)),
+         recall = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::recall(.x, .y)),
+         auc = map2_dbl(.x = validate_actual,
+                         .y = validate_prob,
+                         ~Metrics::auc(.x, .y))) %>% 
+  dplyr::select(accuracy,precision, recall, auc) %>%
+  mutate(f1 = (2*precision*recall)/(precision + recall)) %>% 
+  mutate(runningWindow = i) %>% 
+  relocate(runningWindow)
+
+runningWindow_eval_1  <- bind_rows(runningWindow_eval_1, a)
+  
+}
+```
+
+```{r}
+runningWindow_eval_1 %>% 
+    summarise(accuracy_mean = mean(accuracy),
+            accuracy_se = sd(accuracy),
+            precision_mean = mean(precision),
+            precision_se = sd(precision),
+            recall_mean = mean(recall),
+            recall_se = sd(recall),
+            f1_mean = mean(f1),
+            f1_se = sd(f1),
+            auc_mean = mean(auc),
+            auc_se = sd(auc)) %>% 
+  pivot_longer(cols = everything(),
+               values_to = "scores") %>% 
+  separate(col = name,
+           sep = "_",
+           remove = TRUE,
+           into = c("metrics", "stat")) %>% 
+  pivot_wider(names_from = "stat",
+              values_from = "scores")
+```
+
+
+### bGLM2
+
+
+
+
+```{r, warning=FALSE}
+runningWindow_eval_2 <- data.frame()
+
+for (i in 1:365) {
+  
+
+a <- runningWindow_data %>% 
+  slice(i) %>% 
+  unnest() %>% 
+  vfold_cv(v =  10) %>%   
+  mutate(train = map(.x = splits, 
+                     ~training(.x)),
+         validate = map(.x = splits,
+                        ~testing(.x))) %>% 
+  mutate(model = map(.x = train,
+                     ~glm(data = .x,
+                          formula = established ~ size*noIntroEvent,
+                          family = "binomial"))) %>% 
+  mutate(validate_actual = map(.x = validate,
+                               ~.x$established),
+         validate_prob = map2(.x = model,
+                              .y = validate,
+                              ~predict(object = .x,
+                                       newdata = .y,
+                                       validate = "response"))) %>% 
+  mutate(validate_predicted = map(.x = validate_prob,
+                                  ~ .x > 0.5)) %>% 
+  mutate(accuracy = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::accuracy(.x, .y)),
+         precision = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::precision(.x, .y)),
+         recall = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::recall(.x, .y)),
+         auc = map2_dbl(.x = validate_actual,
+                         .y = validate_prob,
+                         ~Metrics::auc(.x, .y))) %>% 
+  dplyr::select(accuracy,precision, recall, auc) %>%
+  mutate(f1 = (2*precision*recall)/(precision + recall)) %>% 
+  mutate(runningWindow = i) %>% 
+  relocate(runningWindow)
+
+runningWindow_eval_2  <- bind_rows(runningWindow_eval_2, a)
+  
+}
+```
+
+```{r}
+runningWindow_eval_2 %>% 
+    summarise(accuracy_mean = mean(accuracy),
+            accuracy_se = sd(accuracy),
+            precision_mean = mean(precision),
+            precision_se = sd(precision),
+            recall_mean = mean(recall),
+            recall_se = sd(recall),
+            f1_mean = mean(f1),
+            f1_se = sd(f1),
+            auc_mean = mean(auc),
+            auc_se = sd(auc)) %>% 
+  pivot_longer(cols = everything(),
+               values_to = "scores") %>% 
+  separate(col = name,
+           sep = "_",
+           remove = TRUE,
+           into = c("metrics", "stat")) %>% 
+  pivot_wider(names_from = "stat",
+              values_from = "scores")
+```
+
+
+### bGLM3
+
+
+```{r, warning=FALSE}
+runningWindow_eval_3 <- data.frame()
+
+for (i in 1:365) {
+  
+
+a <- runningWindow_data %>% 
+  slice(i) %>% 
+  unnest() %>% 
+  vfold_cv(v =  10) %>%   
+  mutate(train = map(.x = splits, 
+                     ~training(.x)),
+         validate = map(.x = splits,
+                        ~testing(.x))) %>% 
+  mutate(model = map(.x = train,
+                     ~glm(data = .x,
+                          formula = established ~ size*noIntroEvent*entryPoint,
+                          family = "binomial"))) %>% 
+  mutate(validate_actual = map(.x = validate,
+                               ~.x$established),
+         validate_prob = map2(.x = model,
+                              .y = validate,
+                              ~predict(object = .x,
+                                       newdata = .y,
+                                       validate = "response"))) %>% 
+  mutate(validate_predicted = map(.x = validate_prob,
+                                  ~ .x > 0.5)) %>% 
+  mutate(accuracy = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::accuracy(.x, .y)),
+         precision = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::precision(.x, .y)),
+         recall = map2_dbl(.x = validate_actual,
+                         .y = validate_predicted,
+                         ~Metrics::recall(.x, .y)),
+         auc = map2_dbl(.x = validate_actual,
+                         .y = validate_prob,
+                         ~Metrics::auc(.x, .y))) %>% 
+  dplyr::select(accuracy,precision, recall, auc) %>%
+  mutate(f1 = (2*precision*recall)/(precision + recall)) %>% 
+  mutate(runningWindow = i) %>% 
+  relocate(runningWindow)
+
+runningWindow_eval_3  <- bind_rows(runningWindow_eval_3, a)
+  
+}
+```
+
+```{r}
+runningWindow_eval_3 %>% 
+    summarise(accuracy_mean = mean(accuracy),
+            accuracy_se = sd(accuracy),
+            precision_mean = mean(precision),
+            precision_se = sd(precision),
+            recall_mean = mean(recall),
+            recall_se = sd(recall),
+            f1_mean = mean(f1),
+            f1_se = sd(f1),
+            auc_mean = mean(auc),
+            auc_se = sd(auc)) %>% 
+  pivot_longer(cols = everything(),
+               values_to = "scores") %>% 
+  separate(col = name,
+           sep = "_",
+           remove = TRUE,
+           into = c("metrics", "stat")) %>% 
+  pivot_wider(names_from = "stat",
+              values_from = "scores")
+```
+
+
+
+
+
+### plotting
+
+
+```{r}
+temp <- rbind(runningWindow_eval_1 %>% 
+        mutate(model = "bGLM-1"),
+      runningWindow_eval_2 %>% 
+        mutate(model = "bGLM-2")) %>% 
+  rbind(runningWindow_eval_3 %>% 
+           mutate(model = "bGLM-3"))
+```
+
+
+```{r}
+plotData <- temp %>% 
+  group_by(runningWindow, model) %>% 
+    summarise(accuracy = mean(accuracy),
+            precision = mean(precision),
+            recall = mean(recall),
+            f1 = mean(f1),
+            auc = mean(auc)) %>% 
+  pivot_longer(cols = accuracy:auc,
+               names_to = "stat",
+               values_to = "mean") %>% 
+left_join(temp %>% 
+  group_by(runningWindow, model) %>% 
+    summarise(accuracy = sd(accuracy),
+            precision = sd(precision),
+            recall = sd(recall),
+            f1 = sd(f1),
+            auc = sd(auc)) %>% 
+  pivot_longer(cols = accuracy:auc,
+               names_to = "stat",
+               values_to = "sd"),
+  by = c("runningWindow", "model", "stat")) 
+
+plotData <- bind_rows(plotData,
+                      plotData %>%  mutate(runningWindow = runningWindow + 365)) %>% 
+  mutate(pseudoDate = as.Date("2000-11-01") + runningWindow)
+```
+
+
+```{r}
+plotData %>% 
+ggplot() +
+  geom_point(aes(x = pseudoDate,
+                 y = mean,
+                 color = model),
+             size = 0.5) +
+  facet_wrap(vars(stat), 
+             ncol = 1,
+             scales = "free_y") +
+  labs(x = "",
+       y = "",
+       color = "") +
+  theme_bw() +
+  scale_x_date(labels = date_format("%b"), 
+               limits = c(as.Date("2001-01-01"),
+                          as.Date("2001-12-31")),
+               expand = c(0.01,0.01),
+               breaks = c(as.Date("2001-01-01"),
+                          as.Date("2001-02-01"),
+                          as.Date("2001-03-01"),
+                          as.Date("2001-04-01"),
+                          as.Date("2001-05-01"),
+                          as.Date("2001-06-01"),
+                          as.Date("2001-07-01"),
+                          as.Date("2001-08-01"),
+                          as.Date("2001-09-01"),
+                          as.Date("2001-10-01"),
+                          as.Date("2001-11-01"),
+                          as.Date("2001-12-01"),
+                          as.Date("2002-01-01")), 
+               date_labels = c("Jan", " ", " ",
+                          "Apr", " ", " ",
+                          "Jul", " ", " ",
+                          "Oct"," ", " ",
+                          "Jan")) +
+  scale_color_muted() +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 10),
+        axis.text =  element_text(size = 8),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8), 
+        strip.background = element_blank())
+```
+
+```{r}
+ggsave(filename = "output/rw_crossVal.jpg",
+       plot = last_plot(),
+       width = 80,
+       height = 200,
+       units = "mm",
+       dpi = 300,
+       device = "jpeg")
+```
+
+
+
+
+
+
+### measuring deviance of rw-bGLMs
+
+
+
+
+
+```{r, warning=FALSE}
+runningWindow_anova <- runningWindow_data %>%
+  mutate(bGLM1 = map(.x = data,
+                     ~glm(data = .x,
+                          formula = established ~ size,
+                          family = "binomial")),
+         bGLM2 = map(.x = data,
+                     ~glm(data = .x,
+                          formula = established ~ size*noIntroEvent,
+                          family = "binomial")),
+         bGLM3 = map(.x = data,
+                     ~glm(data = .x,
+                          formula = established ~ size*noIntroEvent*entryPoint,
+                          family = "binomial"))) %>% 
+  mutate(anova1.2 = map2(.x = bGLM1,
+                       .y = bGLM2, 
+                      ~tidy(anova(.x, .y, test = "F"))),
+         anova1.3 = map2(.x = bGLM1,
+                       .y = bGLM3, 
+                      ~tidy(anova(.x, .y, test = "F")))) %>% 
+  dplyr::select(runningWindow, anova1.2, anova1.3) 
+
+```
+
+
+
+
+```{r}
+bind_rows(runningWindow_anova %>%
+  dplyr::select(runningWindow, anova1.2) %>% 
+  unnest() %>% 
+  bind_cols(data.frame(model = rep(c("bGLM1", "bGLM2"), 365))) %>% 
+  group_by(model),
+runningWindow_anova %>%
+  dplyr::select(runningWindow, anova1.3) %>% 
+  unnest() %>% 
+  bind_cols(data.frame(model = rep(c("bGLM1", "bGLM3"), 365))) %>% 
+  group_by(model) %>% 
+  filter(model != "bGLM1")) %>% 
+  group_by(model) %>% 
+  summarise(residDev = mean(residual.deviance),
+            residDev_sd = sd(residual.deviance),
+            dev = mean(deviance),
+            dev_sd = sd(deviance),
+            Fstat = mean(statistic),
+            Fstat_sd = sd(statistic),
+            p.value = sum(p.value < 0.05))
+```
+
+
+
+
+```{r}
+plotData <- bind_rows(runningWindow_anova %>%
+  dplyr::select(runningWindow, anova1.2) %>% 
+  unnest() %>% 
+  bind_cols(data.frame(model = rep(c("bGLM1", "bGLM2"), 365))) %>% 
+  group_by(model),
+runningWindow_anova %>%
+  dplyr::select(runningWindow, anova1.3) %>% 
+  unnest() %>% 
+  bind_cols(data.frame(model = rep(c("bGLM1", "bGLM3"), 365))) %>% 
+  group_by(model) %>% 
+  filter(model != "bGLM1")) 
+
+plotData <- bind_rows(plotData,
+                      plotData %>% 
+                        mutate(runningWindow = runningWindow + 365)) %>% 
+  mutate(pseudoDate = as.Date("2000-11-01") + runningWindow)
+plotData %>% 
+ggplot() +
+  geom_point(aes(x = pseudoDate,
+                 y = residual.deviance,
+                 color = model),
+             size = 0.5) +
+  labs(x = "",
+       y = "Residual deviance",
+       color = "") +
+  theme_bw() +
+  scale_x_date(labels = date_format("%b"), 
+               limits = c(as.Date("2001-01-01"),
+                          as.Date("2001-12-31")),
+               expand = c(0.01,0.01),
+               breaks = c(as.Date("2001-01-01"),
+                          as.Date("2001-02-01"),
+                          as.Date("2001-03-01"),
+                          as.Date("2001-04-01"),
+                          as.Date("2001-05-01"),
+                          as.Date("2001-06-01"),
+                          as.Date("2001-07-01"),
+                          as.Date("2001-08-01"),
+                          as.Date("2001-09-01"),
+                          as.Date("2001-10-01"),
+                          as.Date("2001-11-01"),
+                          as.Date("2001-12-01"),
+                          as.Date("2002-01-01")), 
+               date_labels = c("Jan", " ", " ",
+                          "Apr", " ", " ",
+                          "Jul", " ", " ",
+                          "Oct"," ", " ",
+                          "Jan")) +
+  scale_color_muted() +
+  scale_fill_muted() +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 10),
+        axis.text =  element_text(size = 8),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8), 
+        strip.background = element_blank())
+```
+
+
+```{r}
+ggsave(filename = "output/rw_residualDeviance.jpg",
+       plot = last_plot(),
+       width = 80,
+       height = 55,
+       units = "mm",
+       dpi = 300,
+       device = "jpeg")
+```
+
+
+
+```{r, warning=FALSE}
+runningWindow_anova2 <- runningWindow_data %>%
+  mutate(bGLM3 = map(.x = data,
+                     ~glm(data = .x,
+                          formula = established ~ size*noIntroEvent*entryPoint,
+                          family = "binomial"))) %>% 
+  mutate(anova1 = map(.x = bGLM3,
+                      ~tidy(anova(.x, test = "Chisq"))),
+         anova2 = map(.x = bGLM3,
+                      ~tidy(aov(.x)))) %>%  
+  dplyr::select(runningWindow, anova1, anova2) 
+```
+
+
+```{r}
+left_join(runningWindow_anova2 %>%
+  dplyr::select(runningWindow, anova1) %>% 
+  unnest() %>% 
+  filter(term != "NULL"),
+  runningWindow_anova2 %>%
+  dplyr::select(runningWindow, anova2) %>% 
+  unnest() %>% 
+  filter(term != "NULL") %>% 
+  mutate(f_p.value = p.value) %>% 
+  dplyr::select(runningWindow, term, sumsq, statistic, f_p.value),
+ by = c("runningWindow", "term"))
+  
+```
+
+```{r}
+plotData <- bind_rows(
+  left_join(runningWindow_anova2 %>%
+  dplyr::select(runningWindow, anova1) %>% 
+  unnest() %>% 
+  filter(term != "NULL"),
+  runningWindow_anova2 %>%
+  dplyr::select(runningWindow, anova2) %>% 
+  unnest() %>% 
+  filter(term != "NULL") %>% 
+  mutate(f_p.value = p.value) %>% 
+  dplyr::select(runningWindow, term, sumsq, statistic, f_p.value),
+ by = c("runningWindow", "term")),
+left_join(runningWindow_anova2 %>%
+  dplyr::select(runningWindow, anova1) %>% 
+  unnest() %>% 
+  filter(term != "NULL"),
+  runningWindow_anova2 %>%
+  dplyr::select(runningWindow, anova2) %>% 
+  unnest() %>% 
+  filter(term != "NULL") %>% 
+  mutate(f_p.value = p.value) %>% 
+  dplyr::select(runningWindow, term, sumsq, statistic, f_p.value),
+  by = c("runningWindow", "term")) %>% 
+  mutate(runningWindow = runningWindow + 365)) %>% 
+mutate(pseudoDate = as.Date("2000-11-01") + runningWindow) %>% 
+mutate(term = factor(term, 
+                     levels = c("size",
+                                "entryPoint",
+                                "size:entryPoint",
+                                "size:noIntroEvent",
+                                "noIntroEvent",
+                                "size:noIntroEvent:entryPoint",
+                                "noIntroEvent:entryPoint"),
+                     labels = c("Propagule size",
+                                "Spatial environment",
+                                "Propagule size:Spatial environment",
+                                "Propagule size:Propagule number",
+                                "Propagule number",
+                                "Propagule size:Propagule number:Spatial environment",
+                                "Propagule number:Spatial Environment")))
+```
+
+
+
+```{r, fig.height=10, fig.width=8}
+plotData %>% 
+  ggplot() +
+  geom_point(aes(x = pseudoDate,
+                 y = deviance)) +
+  facet_wrap(vars(term),
+             ncol = 1,
+             scales = "free") +
+  labs(x = "",
+       color = "") +
+  scale_colour_muted() +
+  scale_x_date(labels = date_format("%b"), 
+               limits = c(as.Date("2001-01-01"),
+                          as.Date("2001-12-31")),
+               expand = c(0.01,0.01),
+               breaks = c(as.Date("2001-01-01"),
+                          as.Date("2001-02-01"),
+                          as.Date("2001-03-01"),
+                          as.Date("2001-04-01"),
+                          as.Date("2001-05-01"),
+                          as.Date("2001-06-01"),
+                          as.Date("2001-07-01"),
+                          as.Date("2001-08-01"),
+                          as.Date("2001-09-01"),
+                          as.Date("2001-10-01"),
+                          as.Date("2001-11-01"),
+                          as.Date("2001-12-01"),
+                          as.Date("2002-01-01")), 
+               date_labels = c("Jan", " ", " ",
+                          "Apr", " ", " ",
+                          "Jul", " ", " ",
+                          "Oct"," ", " ",
+                          "Jan")) +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 10),
+        axis.text =  element_text(size = 8),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8), 
+        strip.background = element_blank())
+plotData %>% 
+  ggplot() +
+  geom_point(aes(x = pseudoDate,
+                 y = sumsq)) +
+  facet_wrap(vars(term),
+             ncol = 1,
+             scales = "free") +
+  labs(x = "",
+       color = "") +
+  scale_colour_muted() +
+  scale_x_date(labels = date_format("%b"), 
+               limits = c(as.Date("2001-01-01"),
+                          as.Date("2001-12-31")),
+               expand = c(0.01,0.01),
+               breaks = c(as.Date("2001-01-01"),
+                          as.Date("2001-02-01"),
+                          as.Date("2001-03-01"),
+                          as.Date("2001-04-01"),
+                          as.Date("2001-05-01"),
+                          as.Date("2001-06-01"),
+                          as.Date("2001-07-01"),
+                          as.Date("2001-08-01"),
+                          as.Date("2001-09-01"),
+                          as.Date("2001-10-01"),
+                          as.Date("2001-11-01"),
+                          as.Date("2001-12-01"),
+                          as.Date("2002-01-01")), 
+               date_labels = c("Jan", " ", " ",
+                          "Apr", " ", " ",
+                          "Jul", " ", " ",
+                          "Oct"," ", " ",
+                          "Jan")) +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 10),
+        axis.text =  element_text(size = 8),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8), 
+        strip.background = element_blank())
+```
+
+
